@@ -1,0 +1,23 @@
+{
+  "name": "prompto-mcp-server",
+  "version": "0.1.0",
+  "description": "Prompto MCP Server - 提示词优化工具的 MCP 接口",
+  "author": "ZIJIU522",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "prompto-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3",
+    "tsx": "^4.0.0",
+    "@types/node": "^22.0.0"
+  }
+}

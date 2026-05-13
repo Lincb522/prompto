@@ -1,0 +1,282 @@
+{
+  "name": "prompto",
+  "displayName": "Prompto - 提示词改写",
+  "description": "选中文本一键改写为高质量提示词，支持 CLI 透传 / 自定义 API / 本地规则。侧边栏配置面板 + 嵌入式聊天窗口。",
+  "version": "0.3.0",
+  "publisher": "ZIJIU522",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "prompto-sidebar",
+          "title": "Prompto",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "prompto-sidebar": [
+        {
+          "type": "webview",
+          "id": "prompto.configView",
+          "name": "配置面板"
+        },
+        {
+          "type": "webview",
+          "id": "prompto.chatView",
+          "name": "改写对话"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "prompto.openPanel",
+        "title": "Prompto: 打开面板"
+      },
+      {
+        "command": "prompto.rewrite",
+        "title": "Prompto: 改写选中内容"
+      },
+      {
+        "command": "prompto.rewriteToPanel",
+        "title": "Prompto: 改写到聊天窗口"
+      },
+      {
+        "command": "prompto.analyzeProject",
+        "title": "Prompto: 分析当前项目"
+      },
+      {
+        "command": "prompto.focusChat",
+        "title": "Prompto: 聚焦聊天窗口"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "prompto.rewrite",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "prompto.focusChat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "prompto.rewrite",
+          "when": "editorHasSelection",
+          "group": "1_modification"
+        },
+        {
+          "command": "prompto.rewriteToPanel",
+          "when": "editorHasSelection",
+          "group": "1_modification"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Prompto",
+      "properties": {
+        "prompto.engine": {
+          "type": "string",
+          "default": "",
+          "enum": ["", "cli-passthrough", "custom-api", "rule-based"],
+          "enumDescriptions": ["使用客户端配置", "CLI 透传", "自定义 API", "本地规则"],
+          "description": "改写引擎（留空则使用 Prompto 客户端配置）"
+        },
+        "prompto.targetCli": {
+          "type": "string",
+          "default": "",
+          "enum": ["", "claude", "codex", "kiro"],
+          "description": "CLI 透传目标（留空则使用客户端配置）"
+        },
+        "prompto.customApi.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "自定义 API Base URL"
+        },
+        "prompto.customApi.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API Key"
+        },
+        "prompto.customApi.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "模型名"
+        },
+        "prompto.customApi.temperature": {
+          "type": "number",
+          "default": 0.3,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "API 温度参数（0-2）"
+        },
+        "prompto.customApi.stream": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否启用流式输出"
+        },
+        "prompto.replaceSelection": {
+          "type": "boolean",
+          "default": false,
+          "description": "改写后直接替换选中内容（否则显示在聊天窗口）"
+        },
+        "prompto.shortcut": {
+          "type": "string",
+          "default": "CmdOrCtrl+Shift+P",
+          "description": "全局快捷键（Tauri 客户端使用）"
+        },
+        "prompto.theme": {
+          "type": "string",
+          "default": "system",
+          "enum": ["light", "dark", "system"],
+          "enumDescriptions": ["浅色", "深色", "跟随系统"],
+          "description": "界面主题"
+        },
+        "prompto.clipboardWatch": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否监听剪贴板变化自动改写"
+        },
+        "prompto.systemPrompt": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "自定义系统提示词（留空使用内置默认）"
+        },
+        "prompto.rules.trimWhitespace": {
+          "type": "boolean",
+          "default": true,
+          "description": "去除首尾空白"
+        },
+        "prompto.rules.collapseBlankLines": {
+          "type": "boolean",
+          "default": true,
+          "description": "合并空行"
+        },
+        "prompto.rules.protectCodeBlocks": {
+          "type": "boolean",
+          "default": true,
+          "description": "保护代码块"
+        },
+        "prompto.rules.removeFillerWords": {
+          "type": "boolean",
+          "default": true,
+          "description": "去除填充词"
+        },
+        "prompto.rules.structureTemplate": {
+          "type": "boolean",
+          "default": true,
+          "description": "结构化模板"
+        },
+        "prompto.rules.normalizePunctuation": {
+          "type": "boolean",
+          "default": true,
+          "description": "标点规范化"
+        },
+        "prompto.rules.requireActionVerb": {
+          "type": "boolean",
+          "default": true,
+          "description": "要求动词开头"
+        },
+        "prompto.rules.compressIfTooLong": {
+          "type": "boolean",
+          "default": true,
+          "description": "超长压缩"
+        },
+        "prompto.rules.compressThreshold": {
+          "type": "number",
+          "default": 500,
+          "minimum": 100,
+          "description": "压缩阈值（字符数）"
+        },
+        "prompto.cliTemplates.codex.command": {
+          "type": "string",
+          "default": "codex",
+          "description": "Codex CLI 命令"
+        },
+        "prompto.cliTemplates.codex.model": {
+          "type": "string",
+          "default": "",
+          "description": "Codex 使用的模型（留空使用默认）"
+        },
+        "prompto.cliTemplates.codex.modelFlag": {
+          "type": "string",
+          "default": "--model",
+          "description": "Codex 模型参数标志"
+        },
+        "prompto.cliTemplates.codex.reasoningEffort": {
+          "type": "string",
+          "default": "",
+          "enum": ["", "low", "medium", "high"],
+          "description": "Codex 推理强度"
+        },
+        "prompto.cliTemplates.claude.command": {
+          "type": "string",
+          "default": "claude",
+          "description": "Claude CLI 命令"
+        },
+        "prompto.cliTemplates.claude.model": {
+          "type": "string",
+          "default": "",
+          "description": "Claude 使用的模型（留空使用默认）"
+        },
+        "prompto.cliTemplates.claude.modelFlag": {
+          "type": "string",
+          "default": "--model",
+          "description": "Claude 模型参数标志"
+        },
+        "prompto.cliTemplates.claude.reasoningEffort": {
+          "type": "string",
+          "default": "",
+          "enum": ["", "low", "medium", "high"],
+          "description": "Claude 推理强度"
+        },
+        "prompto.cliTemplates.kiro.command": {
+          "type": "string",
+          "default": "kiro-cli",
+          "description": "Kiro CLI 命令"
+        },
+        "prompto.cliTemplates.kiro.model": {
+          "type": "string",
+          "default": "",
+          "description": "Kiro 使用的模型（留空使用默认）"
+        },
+        "prompto.cliTemplates.kiro.modelFlag": {
+          "type": "string",
+          "default": "--model",
+          "description": "Kiro 模型参数标志"
+        },
+        "prompto.cliTemplates.kiro.reasoningEffort": {
+          "type": "string",
+          "default": "",
+          "enum": ["", "low", "medium", "high"],
+          "description": "Kiro 推理强度"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build:ext": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "build:webview": "cd webview && npm run build",
+    "build": "npm run build:ext && npm run build:webview",
+    "watch:ext": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "dev:webview": "cd webview && npm run dev",
+    "package": "npx @vscode/vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "~5.8.3"
+  }
+}

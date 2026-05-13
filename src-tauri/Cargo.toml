@@ -1,0 +1,34 @@
+[package]
+name = "prompto"
+version = "0.1.0"
+description = "跨平台的 AI 提示词优化工具"
+authors = ["ZIJIU522"]
+edition = "2021"
+
+[lib]
+name = "prompto_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+anyhow = "1"
+thiserror = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "5"
+which = "6"
+futures-util = "0.3"
+regex = "1"
+once_cell = "1"
+toml_edit = "0.22"
