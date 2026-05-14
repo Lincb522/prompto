@@ -113,16 +113,19 @@ export async function analyzeProject(cwd: string): Promise<ProjectContext> {
       if (allDeps["react"]) ctx.frameworks.push(`React ${allDeps["react"]}`);
       if (allDeps["vue"]) ctx.frameworks.push(`Vue ${allDeps["vue"]}`);
       if (allDeps["next"]) ctx.frameworks.push(`Next.js ${allDeps["next"]}`);
+      if (allDeps["nuxt"]) ctx.frameworks.push(`Nuxt ${allDeps["nuxt"]}`);
       if (allDeps["svelte"]) ctx.frameworks.push("Svelte");
       if (allDeps["@tauri-apps/api"]) ctx.frameworks.push("Tauri");
       if (allDeps["electron"]) ctx.frameworks.push("Electron");
       if (allDeps["express"]) ctx.frameworks.push("Express");
+      if (allDeps["fastify"]) ctx.frameworks.push("Fastify");
       if (allDeps["tailwindcss"]) ctx.frameworks.push("Tailwind CSS");
+      if (allDeps["zustand"]) ctx.frameworks.push("Zustand");
+      if (allDeps["@modelcontextprotocol/sdk"]) ctx.frameworks.push("MCP SDK");
 
-      // 关键依赖（前 15 个）
+      // 关键依赖（全部 dependencies）
       const deps = pkg.dependencies || {};
       ctx.dependencies = Object.entries(deps)
-        .slice(0, 15)
         .map(([name, version]) => ({ name, version: String(version) }));
 
       // 命令
@@ -141,10 +144,41 @@ export async function analyzeProject(cwd: string): Promise<ProjectContext> {
       const cargo = await readFile(cargoPath, "utf-8");
       const nameMatch = cargo.match(/^name\s*=\s*"([^"]+)"/m);
       if (nameMatch && !ctx.name) ctx.name = nameMatch[1];
+      // 提取 Rust 依赖
+      const depsSection = cargo.match(/\[dependencies\]([\s\S]*?)(?:\[|$)/);
+      if (depsSection) {
+        const rustDeps = depsSection[1].match(/^(\w[\w-]*)\s*=/gm);
+        if (rustDeps) {
+          for (const d of rustDeps.slice(0, 20)) {
+            const name = d.replace(/\s*=.*/, "").trim();
+            if (name && !ctx.dependencies.find(x => x.name === name)) {
+              ctx.dependencies.push({ name, version: "(rust)" });
+            }
+          }
+        }
+      }
       ctx.buildCommand = ctx.buildCommand || "cargo build";
       ctx.testCommand = ctx.testCommand || "cargo test";
     } catch { /* ignore */ }
   }
+
+  // 检测子项目（monorepo 结构）
+  const subProjects = ["mcp-server", "vscode-extension", "packages", "apps"];
+  for (const sub of subProjects) {
+    const subPkg = join(cwd, sub, "package.json");
+    if (await fileExists(subPkg)) {
+      try {
+        const pkg = JSON.parse(await readFile(subPkg, "utf-8"));
+        const subDeps = pkg.dependencies || {};
+        // 添加子项目的关键框架
+        if (subDeps["@modelcontextprotocol/sdk"]) ctx.frameworks.push("MCP SDK");
+        if (subDeps["@types/vscode"]) ctx.frameworks.push("VS Code Extension");
+      } catch {}
+    }
+  }
+
+  // 去重框架
+  ctx.frameworks = [...new Set(ctx.frameworks)];
 
   // 检测 pyproject.toml / requirements.txt（Python）
   if (await fileExists(join(cwd, "pyproject.toml")) || await fileExists(join(cwd, "requirements.txt"))) {
@@ -158,6 +192,12 @@ export async function analyzeProject(cwd: string): Promise<ProjectContext> {
     ctx.testCommand = ctx.testCommand || "go test ./...";
   }
 
+  // 检测 src-tauri（Tauri 子目录）
+  if (await fileExists(join(cwd, "src-tauri", "Cargo.toml"))) {
+    if (!ctx.languages.includes("Rust")) ctx.languages.push("Rust");
+    if (!ctx.frameworks.includes("Tauri")) ctx.frameworks.push("Tauri");
+  }
+
   // 代码风格
   if (await fileExists(join(cwd, ".eslintrc.json")) || await fileExists(join(cwd, ".eslintrc.js")) || await fileExists(join(cwd, "eslint.config.js"))) {
     ctx.codeStyle = "ESLint";
@@ -165,9 +205,12 @@ export async function analyzeProject(cwd: string): Promise<ProjectContext> {
   if (await fileExists(join(cwd, ".prettierrc")) || await fileExists(join(cwd, ".prettierrc.json"))) {
     ctx.codeStyle = (ctx.codeStyle ? ctx.codeStyle + " + " : "") + "Prettier";
   }
+  if (await fileExists(join(cwd, "biome.json"))) {
+    ctx.codeStyle = (ctx.codeStyle ? ctx.codeStyle + " + " : "") + "Biome";
+  }
 
-  // 目录结构（只看第一层 + src 下第一层）
-  ctx.structure = await getStructure(cwd);
+  // 目录结构（完整扫描，2 层深度）
+  ctx.structure = await getStructureDeep(cwd, 2);
 
   // 缓存
   cachedContext = ctx;
@@ -236,32 +279,46 @@ async function detectPackageManager(cwd: string): Promise<string> {
 }
 
 async function getStructure(cwd: string): Promise<string[]> {
+  return getStructureDeep(cwd, 1);
+}
+
+async function getStructureDeep(cwd: string, maxDepth: number, currentDepth = 0, prefix = ""): Promise<string[]> {
   const result: string[] = [];
+  const IGNORE = new Set(["node_modules", "target", "dist", "__pycache__", ".git", ".DS_Store", "build", "out", ".next", ".nuxt", "coverage"]);
+
   try {
     const entries = await readdir(cwd);
     const dirs: string[] = [];
     const files: string[] = [];
 
     for (const entry of entries) {
-      if (entry.startsWith(".") || entry === "node_modules" || entry === "target" || entry === "dist" || entry === "__pycache__") continue;
+      if (entry.startsWith(".") && entry !== ".gitignore") continue;
+      if (IGNORE.has(entry)) continue;
       const s = await stat(join(cwd, entry));
-      if (s.isDirectory()) dirs.push(entry + "/");
+      if (s.isDirectory()) dirs.push(entry);
       else files.push(entry);
     }
 
-    // 只列目录 + 关键配置文件
-    for (const d of dirs.sort()) result.push(`  ${d}`);
-    for (const f of files.filter((f) => CONFIG_FILES.includes(f)).sort()) result.push(`  ${f}`);
-
-    // src/ 下再展开一层
-    const srcPath = join(cwd, "src");
-    if (await fileExists(srcPath)) {
-      const srcEntries = await readdir(srcPath);
-      for (const entry of srcEntries.sort().slice(0, 15)) {
-        if (entry.startsWith(".")) continue;
-        const s = await stat(join(srcPath, entry));
-        result.push(`  src/${entry}${s.isDirectory() ? "/" : ""}`);
+    // 目录
+    for (const d of dirs.sort()) {
+      result.push(`${prefix}${d}/`);
+      if (currentDepth < maxDepth) {
+        const subItems = await getStructureDeep(join(cwd, d), maxDepth, currentDepth + 1, prefix + "  ");
+        result.push(...subItems);
       }
+    }
+
+    // 文件（只列关键文件，避免太长）
+    const importantFiles = files.filter(f =>
+      CONFIG_FILES.includes(f) ||
+      f === "README.md" ||
+      f === "LICENSE" ||
+      f.endsWith(".rs") ||
+      f.endsWith(".tsx") && currentDepth <= 1 ||
+      f.endsWith(".ts") && currentDepth <= 1
+    );
+    for (const f of importantFiles.sort().slice(0, 20)) {
+      result.push(`${prefix}${f}`);
     }
   } catch { /* ignore */ }
   return result;
