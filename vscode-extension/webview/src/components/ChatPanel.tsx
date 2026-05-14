@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Copy, Check, Loader2, Sparkles, RotateCcw, Pin, Trash2 } from "lucide-react";
+import { Send, Copy, Check, Loader2, Sparkles, RotateCcw, Pin, Trash2, MessageSquareShare } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useAppStore, type HistoryItem } from "@/store/app-store";
 import { api, onMessage } from "@/lib/vscode-api";
@@ -70,6 +70,8 @@ export function ChatPanel() {
         timestamp: Date.now(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
+      // 自动发送到 IDE 聊天窗口
+      api.sendToChat(result.optimized).catch(() => {});
     } catch (e: any) {
       const errorMsg: ChatMessage = {
         id: `${Date.now()}-error`,
@@ -166,13 +168,22 @@ export function ChatPanel() {
                 <pre className="whitespace-pre-wrap break-words font-mono text-[11px]">{msg.content}</pre>
               </div>
               {msg.role === "assistant" && !msg.content.startsWith("❌") && (
-                <button
-                  onClick={() => void handleCopy(msg.content, msg.id)}
-                  className="text-[10px] text-fg-muted dark:text-fg-dark-muted hover:text-primary cursor-pointer flex items-center gap-1 px-1"
-                >
-                  {copied === msg.id ? <Check className="w-2.5 h-2.5 text-primary" /> : <Copy className="w-2.5 h-2.5" />}
-                  {copied === msg.id ? "已复制" : "复制"}
-                </button>
+                <div className="flex items-center gap-2 px-1">
+                  <button
+                    onClick={() => void handleCopy(msg.content, msg.id)}
+                    className="text-[10px] text-fg-muted dark:text-fg-dark-muted hover:text-primary cursor-pointer flex items-center gap-1"
+                  >
+                    {copied === msg.id ? <Check className="w-2.5 h-2.5 text-primary" /> : <Copy className="w-2.5 h-2.5" />}
+                    {copied === msg.id ? "已复制" : "复制"}
+                  </button>
+                  <button
+                    onClick={() => void api.sendToChat(msg.content)}
+                    className="text-[10px] text-fg-muted dark:text-fg-dark-muted hover:text-primary cursor-pointer flex items-center gap-1"
+                  >
+                    <MessageSquareShare className="w-2.5 h-2.5" />
+                    发送到聊天
+                  </button>
+                </div>
               )}
             </div>
           ))}

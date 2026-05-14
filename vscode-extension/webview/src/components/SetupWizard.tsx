@@ -24,14 +24,31 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
 
   // 初始化加载
   useEffect(() => {
-    api.detectClis().then((c) => setClis(c as CliStatus[])).catch(() => {});
+    api.detectClis().then((c) => {
+      setClis(c as CliStatus[]);
+      // 自动选中第一个已安装的 CLI
+      const installed = (c as CliStatus[]).find((x) => x.installed);
+      if (installed) setSelectedCli(installed.cli as TargetCli);
+    }).catch(() => {});
     api.checkMcpStatus().then((s) => setMcpStatuses(s as McpStatus[])).catch(() => {});
   }, []);
 
-  // 加载模型列表
-  useEffect(() => {
-    api.listModels(selectedCli).then((m) => setModels(m as ModelInfo[])).catch(() => {});
+  // 加载模型列表 — 切换 CLI 或进入第 3 步时触发
+  const [loadingModels, setLoadingModels] = useState(false);
+  const fetchModels = useCallback(() => {
+    setLoadingModels(true);
+    api.listModels(selectedCli)
+      .then((m) => setModels(m as ModelInfo[]))
+      .catch(() => setModels([]))
+      .finally(() => setLoadingModels(false));
   }, [selectedCli]);
+
+  useEffect(() => { fetchModels(); }, [fetchModels]);
+
+  // 进入第 3 步时也刷新一次
+  useEffect(() => {
+    if (step === 3) fetchModels();
+  }, [step, fetchModels]);
 
   const hasAnyCli = clis.some((c) => c.installed);
   const hasAnyMcp = mcpStatuses.some((s) => s.installed);
@@ -245,8 +262,19 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
 
             <Field label="模型">
               <div className="space-y-1">
-                {models.length === 0 && (
-                  <p className="text-[10px] text-fg-muted dark:text-fg-dark-muted py-2">加载模型列表中...</p>
+                {loadingModels && (
+                  <div className="flex items-center gap-1.5 py-2 text-fg-muted dark:text-fg-dark-muted">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span className="text-[10px]">加载模型列表...</span>
+                  </div>
+                )}
+                {!loadingModels && models.length === 0 && (
+                  <div className="flex items-center justify-between py-2">
+                    <span className="text-[10px] text-fg-muted dark:text-fg-dark-muted">未获取到模型</span>
+                    <button onClick={fetchModels} className="text-[10px] px-2 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 cursor-pointer transition-colors">
+                      重新加载
+                    </button>
+                  </div>
                 )}
                 {models.map((m) => (
                   <label key={m.slug} className="flex items-center gap-2 py-1.5 px-2 rounded-md hover:bg-white/30 dark:hover:bg-white/5 cursor-pointer transition-colors">

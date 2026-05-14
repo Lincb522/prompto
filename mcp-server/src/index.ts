@@ -412,9 +412,137 @@ async function optimize(input: string, projectDir?: string): Promise<string> {
 // ============================================================
 
 const server = new Server(
-  { name: "prompto", version: "0.1.0" },
+  { name: "prompto", version: "0.2.0" },
   { capabilities: { tools: {} } }
 );
+
+// ============================================================
+// 消息队列（多路通信桥）
+// ============================================================
+
+const QUEUE_DIR = join(homedir(), "Library", "Application Support", "prompto", "mcp-queue");
+
+interface QueueMessage {
+  id: string;
+  timestamp: number;
+  type: "optimization_result";
+  original: string;
+  optimized: string;
+  engine: string;
+  consumed: boolean;
+}
+
+async function ensureQueueDir() {
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(QUEUE_DIR, { recursive: true });
+}
+
+async function readQueue(channel?: string): Promise<QueueMessage[]> {
+  await ensureQueueDir();
+  const { readdir, readFile: rf } = await import("node:fs/promises");
+  const { existsSync } = await import("node:fs");
+  try {
+    // 如果指定了通道，只读该通道目录
+    const dirs: string[] = [];
+    if (channel) {
+      // channel 可能是 ID 或项目路径
+      const channelDir = join(QUEUE_DIR, channel);
+      if (existsSync(channelDir)) {
+        dirs.push(channelDir);
+      } else {
+        // 尝试按项目路径匹配：遍历所有通道目录找匹配的
+        const allDirs = await readdir(QUEUE_DIR).catch(() => [] as string[]);
+        for (const d of allDirs) {
+          const dirPath = join(QUEUE_DIR, d);
+          const files = await readdir(dirPath).catch(() => [] as string[]);
+          for (const f of files.filter(f => f.endsWith(".json")).slice(0, 1)) {
+            try {
+              const data = JSON.parse(await rf(join(dirPath, f), "utf-8"));
+              if (data.project_dir === channel || data.channel === channel) {
+                dirs.push(dirPath);
+                break;
+              }
+            } catch {}
+          }
+        }
+      }
+    } else {
+      // 读取所有通道
+      const allDirs = await readdir(QUEUE_DIR).catch(() => [] as string[]);
+      for (const d of allDirs) {
+        dirs.push(join(QUEUE_DIR, d));
+      }
+    }
+
+    const messages: QueueMessage[] = [];
+    for (const dir of dirs) {
+      try {
+        const files = await readdir(dir);
+        for (const file of files.filter(f => f.endsWith(".json")).sort()) {
+          try {
+            const data = await rf(join(dir, file), "utf-8");
+            messages.push(JSON.parse(data));
+          } catch {}
+        }
+      } catch {}
+    }
+    return messages;
+  } catch {
+    return [];
+  }
+}
+
+async function getPendingMessages(channel?: string): Promise<QueueMessage[]> {
+  const all = await readQueue(channel);
+  return all.filter(m => !m.consumed);
+}
+
+async function markConsumed(ids: string[]) {
+  const { readFile: rf, writeFile: wf, readdir } = await import("node:fs/promises");
+  await ensureQueueDir();
+  // 遍历所有通道子目录
+  const channelDirs = await readdir(QUEUE_DIR).catch(() => [] as string[]);
+  for (const dir of channelDirs) {
+    const dirPath = join(QUEUE_DIR, dir);
+    try {
+      const files = await readdir(dirPath);
+      for (const file of files.filter(f => f.endsWith(".json"))) {
+        try {
+          const path = join(dirPath, file);
+          const data = JSON.parse(await rf(path, "utf-8")) as QueueMessage;
+          if (ids.includes(data.id)) {
+            data.consumed = true;
+            await wf(path, JSON.stringify(data, null, 2), "utf-8");
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+}
+
+async function cleanOldMessages() {
+  const { readdir, unlink, readFile: rf } = await import("node:fs/promises");
+  await ensureQueueDir();
+  try {
+    const channelDirs = await readdir(QUEUE_DIR);
+    const now = Date.now();
+    for (const dir of channelDirs) {
+      const dirPath = join(QUEUE_DIR, dir);
+      try {
+        const files = await readdir(dirPath);
+        for (const file of files.filter(f => f.endsWith(".json"))) {
+          try {
+            const path = join(dirPath, file);
+            const data = JSON.parse(await rf(path, "utf-8")) as QueueMessage;
+            if ((data.consumed && now - data.timestamp > 3600_000) || now - data.timestamp > 86400_000) {
+              await unlink(path);
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+}
 
 // 列出工具
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -470,6 +598,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object" as const,
         properties: {},
+      },
+    },
+    {
+      name: "get_pending_results",
+      description: "获取插件端最新的优化结果。当用户在 Prompto 插件中完成提示词改写后，结果会自动推送到这里。可按通道/项目过滤。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          channel: {
+            type: "string",
+            description: "通道 ID 或项目目录路径（可选，不传则获取所有通道）",
+          },
+          mark_consumed: {
+            type: "boolean",
+            description: "是否标记为已消费（默认 true）",
+          },
+        },
+      },
+    },
+    {
+      name: "get_latest_optimization",
+      description: "获取最近一次的优化结果。如果插件刚完成了一次改写，这里会返回最新的结果。适合在对话中直接使用优化后的提示词。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          channel: {
+            type: "string",
+            description: "通道 ID 或项目目录路径（可选）",
+          },
+        },
       },
     },
   ],
@@ -548,6 +706,43 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
     return {
       content: [{ type: "text" as const, text: JSON.stringify(info, null, 2) }],
+    };
+  }
+
+  if (name === "get_pending_results") {
+    const { channel, mark_consumed = true } = (args || {}) as { channel?: string; mark_consumed?: boolean };
+    await cleanOldMessages();
+    const pending = await getPendingMessages(channel);
+    if (pending.length === 0) {
+      return {
+        content: [{ type: "text" as const, text: "暂无待处理的优化结果。" }],
+      };
+    }
+    if (mark_consumed) {
+      await markConsumed(pending.map(m => m.id));
+    }
+    const formatted = pending.map(m =>
+      `[${new Date(m.timestamp).toLocaleTimeString("zh-CN")}] (${m.engine})\n原文: ${m.original.slice(0, 100)}${m.original.length > 100 ? "..." : ""}\n优化: ${m.optimized}`
+    ).join("\n\n---\n\n");
+    return {
+      content: [{ type: "text" as const, text: `共 ${pending.length} 条待处理结果：\n\n${formatted}` }],
+    };
+  }
+
+  if (name === "get_latest_optimization") {
+    const { channel } = (args || {}) as { channel?: string };
+    await cleanOldMessages();
+    const all = await readQueue(channel);
+    const latest = all.filter(m => !m.consumed).sort((a, b) => b.timestamp - a.timestamp)[0];
+    if (!latest) {
+      return {
+        content: [{ type: "text" as const, text: "暂无新的优化结果。请先在 Prompto 插件中改写提示词。" }],
+      };
+    }
+    // 标记为已消费
+    await markConsumed([latest.id]);
+    return {
+      content: [{ type: "text" as const, text: latest.optimized }],
     };
   }
 

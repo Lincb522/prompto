@@ -49,6 +49,14 @@ export interface AppConfig {
   shortcut: string;
   system_prompt: string;
   theme: string;
+  mcp_channels: McpChannel[];
+}
+
+export interface McpChannel {
+  id: string;
+  name: string;
+  project_dir: string;
+  enabled: boolean;
 }
 
 export interface HistoryItem {

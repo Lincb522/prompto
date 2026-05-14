@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Zap, Circle, Layers, Settings, FolderOpen, RotateCcw, BarChart3, Sparkles } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useAppStore, type AppConfig, type TargetCli, type McpStatus } from "@/store/app-store";
@@ -145,7 +145,7 @@ function StatusView() {
 
 // ========== 设置视图 ==========
 
-type SettingsTab = "general" | "cli" | "api" | "rules" | "prompt";
+type SettingsTab = "general" | "cli" | "api" | "rules" | "prompt" | "channels";
 
 function SettingsView() {
   const config = useAppStore((s) => s.config)!;
@@ -165,6 +165,7 @@ function SettingsView() {
     { key: "api", label: "API" },
     { key: "rules", label: "规则" },
     { key: "prompt", label: "提示词" },
+    { key: "channels", label: "通道" },
   ];
 
   return (
@@ -296,6 +297,9 @@ function SettingsView() {
         </div>
       )}
 
+      {/* MCP 通道 */}
+      {settingsTab === "channels" && <ChannelsTab draft={draft} setDraft={setDraft} />}
+
       {/* 保存 + 打开配置目录 */}
       <div className="flex items-center gap-2 pt-1 border-t border-white/10 dark:border-white/5">
         <button onClick={save} className="btn-primary !text-[11px] !px-3 !py-1.5">保存</button>
@@ -308,16 +312,98 @@ function SettingsView() {
   );
 }
 
+// ========== MCP 通道配置 ==========
+
+function ChannelsTab({ draft, setDraft }: { draft: AppConfig; setDraft: (d: AppConfig) => void }) {
+  const channels = draft.mcp_channels || [];
+
+  const addChannel = () => {
+    const id = `ch-${Date.now().toString(36)}`;
+    setDraft({
+      ...draft,
+      mcp_channels: [...channels, { id, name: "", project_dir: "", enabled: true }],
+    });
+  };
+
+  const updateChannel = (index: number, patch: Partial<import("@/store/app-store").McpChannel>) => {
+    const updated = [...channels];
+    updated[index] = { ...updated[index], ...patch };
+    setDraft({ ...draft, mcp_channels: updated });
+  };
+
+  const removeChannel = (index: number) => {
+    setDraft({ ...draft, mcp_channels: channels.filter((_, i) => i !== index) });
+  };
+
+  return (
+    <div className="space-y-2.5">
+      <p className="text-[10px] text-fg-muted dark:text-fg-dark-muted">
+        配置 MCP 通道，改写结果会按通道推送到对应项目的 IDE。
+      </p>
+
+      {channels.length === 0 && (
+        <p className="text-[10px] text-fg-muted/60 dark:text-fg-dark-muted/60 py-2">
+          未配置通道，改写结果将推送到全局队列。
+        </p>
+      )}
+
+      {channels.map((ch, i) => (
+        <div key={ch.id} className="p-2 rounded-md bg-white/30 dark:bg-white/5 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <CheckboxField
+              label={ch.name || `通道 ${i + 1}`}
+              checked={ch.enabled}
+              onChange={(v) => updateChannel(i, { enabled: v })}
+            />
+            <button
+              onClick={() => removeChannel(i)}
+              className="text-[9px] text-red-400 hover:text-red-500 cursor-pointer px-1"
+            >
+              删除
+            </button>
+          </div>
+          <input
+            className="glass-input !text-[10px] !py-1"
+            value={ch.name}
+            onChange={(e) => updateChannel(i, { name: e.target.value })}
+            placeholder="通道名称（如：我的项目）"
+          />
+          <input
+            className="glass-input !text-[10px] !py-1 font-mono"
+            value={ch.project_dir}
+            onChange={(e) => updateChannel(i, { project_dir: e.target.value })}
+            placeholder="项目目录路径（如：/Users/xxx/my-project）"
+          />
+        </div>
+      ))}
+
+      <button
+        onClick={addChannel}
+        className="w-full py-1.5 text-[10px] text-primary hover:bg-primary/10 rounded cursor-pointer transition-colors border border-dashed border-primary/30"
+      >
+        + 添加通道
+      </button>
+    </div>
+  );
+}
+
 // ========== CLI 设置子面板 ==========
 
 function CliSettingsTab({ draft, setDraft, clis }: { draft: AppConfig; setDraft: (d: AppConfig) => void; clis: { cli: string; installed: boolean; version: string | null }[] }) {
   const [editCli, setEditCli] = useState<TargetCli>(draft.target_cli);
   const [models, setModels] = useState<import("@/store/app-store").ModelInfo[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
   const tpl = draft.cli_templates[editCli];
 
-  useEffect(() => {
-    api.listModels(editCli).then((m) => setModels(m as any[])).catch(() => setModels([]));
+  const fetchModels = useCallback(() => {
+    setLoadingModels(true);
+    api.listModels(editCli)
+      .then((m) => setModels(m as any[]))
+      .catch(() => setModels([]))
+      .finally(() => setLoadingModels(false));
   }, [editCli]);
+
+  useEffect(() => { fetchModels(); }, [fetchModels]);
 
   const updateTpl = (patch: Partial<typeof tpl>) => {
     setDraft({
@@ -361,18 +447,28 @@ function CliSettingsTab({ draft, setDraft, clis }: { draft: AppConfig; setDraft:
         <input className="glass-input !text-[11px] !py-1.5 font-mono" value={tpl.command} onChange={(e) => updateTpl({ command: e.target.value })} />
       </Field>
       <Field label="模型">
-        {models.length > 0 ? (
-          <select className="glass-input !text-[11px] !py-1.5" value={tpl.model} onChange={(e) => updateTpl({ model: e.target.value })}>
-            <option value="">默认</option>
-            {models.map((m) => (
-              <option key={m.slug} value={m.slug}>
-                {m.display_name}{m.description ? ` — ${m.description}` : ""}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <input className="glass-input !text-[11px] !py-1.5" value={tpl.model} onChange={(e) => updateTpl({ model: e.target.value })} placeholder="留空使用默认" />
-        )}
+        <div className="flex items-center gap-1.5">
+          {models.length > 0 ? (
+            <select className="glass-input !text-[11px] !py-1.5 flex-1" value={tpl.model} onChange={(e) => updateTpl({ model: e.target.value })}>
+              <option value="">默认</option>
+              {models.map((m) => (
+                <option key={m.slug} value={m.slug}>
+                  {m.display_name}{m.description ? ` — ${m.description}` : ""}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input className="glass-input !text-[11px] !py-1.5 flex-1" value={tpl.model} onChange={(e) => updateTpl({ model: e.target.value })} placeholder="留空使用默认" />
+          )}
+          <button
+            onClick={fetchModels}
+            disabled={loadingModels}
+            className="shrink-0 px-1.5 py-1.5 rounded text-fg-muted dark:text-fg-dark-muted hover:text-primary hover:bg-primary/10 cursor-pointer transition-colors disabled:opacity-50"
+            title="刷新模型列表"
+          >
+            <RotateCcw className={cn("w-3 h-3", loadingModels && "animate-spin")} />
+          </button>
+        </div>
       </Field>
       <Field label="模型参数">
         <input className="glass-input !text-[11px] !py-1.5" value={tpl.model_flag} onChange={(e) => updateTpl({ model_flag: e.target.value })} placeholder="--model" />

@@ -76,8 +76,9 @@ export const api = {
     return waitForMessage("clisDetected");
   },
   listModels: (cli: string) => {
-    postMessage("listModels", { cli });
-    return waitForMessage("modelsLoaded");
+    const requestId = `models-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    postMessage("listModels", { cli, requestId });
+    return waitForMessage<unknown>(`modelsLoaded:${requestId}`);
   },
   optimize: (input: string, requestId: string) => {
     postMessage("optimize", { input, requestId });
@@ -119,5 +120,9 @@ export const api = {
   markSetupDone: () => {
     postMessage("markSetupDone");
     return waitForMessage("setupMarked");
+  },
+  sendToChat: (text: string) => {
+    postMessage("sendToChat", { text });
+    return waitForMessage("sentToChat");
   },
 };

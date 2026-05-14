@@ -42,6 +42,13 @@ interface RuleConfig {
   compress_threshold: number;
 }
 
+interface McpChannel {
+  id: string;
+  name: string;
+  project_dir: string;
+  enabled: boolean;
+}
+
 interface AppConfig {
   engine: string;
   target_cli: string;
@@ -52,6 +59,7 @@ interface AppConfig {
   shortcut: string;
   system_prompt: string;
   theme: string;
+  mcp_channels: McpChannel[];
 }
 
 interface HistoryItem {
@@ -117,6 +125,7 @@ const DEFAULT_CONFIG: AppConfig = {
   shortcut: "CmdOrCtrl+Shift+P",
   system_prompt: "",
   theme: "system",
+  mcp_channels: [],
 };
 
 // ============================================================
@@ -269,6 +278,52 @@ function saveConfig(config: AppConfig): void {
 }
 
 // ============================================================
+// MCP 消息队列（插件 → IDE 通信桥）
+// ============================================================
+
+const MCP_QUEUE_DIR = join(CONFIG_DIR, "mcp-queue");
+
+function pushToMcpQueue(original: string, optimized: string, engine: string): void {
+  try {
+    const config = loadConfig();
+    const channels = config.mcp_channels || [];
+    const enabledChannels = channels.filter(c => c.enabled);
+
+    if (enabledChannels.length === 0) {
+      // 没有配置通道，写入默认全局队列
+      const globalDir = join(MCP_QUEUE_DIR, "_global");
+      mkdirSync(globalDir, { recursive: true });
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const msg = { id, timestamp: Date.now(), type: "optimization_result", channel: "_global", original, optimized, engine, consumed: false };
+      writeFileSync(join(globalDir, `${id}.json`), JSON.stringify(msg, null, 2), "utf-8");
+      return;
+    }
+
+    // 写入所有启用的通道
+    for (const channel of enabledChannels) {
+      const channelDir = join(MCP_QUEUE_DIR, channel.id);
+      mkdirSync(channelDir, { recursive: true });
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const msg = {
+        id,
+        timestamp: Date.now(),
+        type: "optimization_result",
+        channel: channel.id,
+        channel_name: channel.name,
+        project_dir: channel.project_dir,
+        original,
+        optimized,
+        engine,
+        consumed: false,
+      };
+      writeFileSync(join(channelDir, `${id}.json`), JSON.stringify(msg, null, 2), "utf-8");
+    }
+  } catch {
+    // 写入失败不影响主流程
+  }
+}
+
+// ============================================================
 // 历史记录
 // ============================================================
 
@@ -329,15 +384,19 @@ async function detectClis(): Promise<CliStatus[]> {
 
 async function listModels(cli: string): Promise<ModelInfo[]> {
   // 和 Tauri 客户端对齐的模型获取逻辑
-  switch (cli) {
-    case "claude":
-      return claudeDefaultModels();
-    case "codex":
-      return listCodexModels();
-    case "kiro":
-      return listKiroModels();
-    default:
-      return [];
+  try {
+    switch (cli) {
+      case "claude":
+        return claudeDefaultModels();
+      case "codex":
+        return await listCodexModels();
+      case "kiro":
+        return await listKiroModels();
+      default:
+        return [];
+    }
+  } catch {
+    return [];
   }
 }
 
@@ -419,24 +478,25 @@ async function listKiroModels(): Promise<ModelInfo[]> {
     for (const line of stdout.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("Available models")) continue;
-      const raw = trimmed.replace(/^\*/, "").trim();
-      const parts = raw.split(/\s+/);
-      const slug = parts[0];
-      if (!slug) continue;
-      // 跳过 credits 列（如 "1.30x credits"）
-      let descParts: string[] = [];
-      let i = 1;
-      // 跳过数字+x和credits
-      if (parts[i] && /^\d/.test(parts[i])) i += 2;
-      descParts = parts.slice(i);
-      const desc = descParts.join(" ");
-      models.push({
-        slug,
-        display_name: slug,
-        description: desc || null,
-        reasoning_levels: [],
-        default_reasoning: null,
-      });
+      // 格式: [*] slug    N.NNx credits    description
+      const raw = trimmed.replace(/^\*\s*/, "").trim();
+      // 用正则匹配: slug + credits部分 + 描述
+      const match = raw.match(/^(\S+)\s+(\d+\.\d+x\s+credits)\s+(.*)/);
+      if (match) {
+        models.push({
+          slug: match[1],
+          display_name: match[1],
+          description: match[3].trim() || null,
+          reasoning_levels: [],
+          default_reasoning: null,
+        });
+      } else {
+        // 简单 fallback：取第一个词作为 slug
+        const slug = raw.split(/\s+/)[0];
+        if (slug && slug !== "credits") {
+          models.push({ slug, display_name: slug, description: null, reasoning_levels: [], default_reasoning: null });
+        }
+      }
     }
     return models.length > 0 ? models : [{ slug: "default", display_name: "默认模型", description: null, reasoning_levels: [], default_reasoning: null }];
   } catch {
@@ -593,7 +653,17 @@ async function handleMessage(msg: { type: string; payload?: any }, post: (type: 
     }
     case "clearAllHistory": { saveHistory([]); post("historyLoaded", []); break; }
     case "detectClis": { post("clisDetected", await detectClis()); break; }
-    case "listModels": { post("modelsLoaded", await listModels(payload.cli)); break; }
+    case "listModels": {
+      try {
+        const models = await listModels(payload.cli);
+        const responseType = payload.requestId ? `modelsLoaded:${payload.requestId}` : "modelsLoaded";
+        post(responseType, models);
+      } catch (e: any) {
+        const responseType = payload.requestId ? `modelsLoaded:${payload.requestId}` : "modelsLoaded";
+        post(responseType, []);
+      }
+      break;
+    }
     case "optimize": {
       const config = loadConfig();
       post("optimizeStart", { requestId: payload.requestId });
@@ -601,6 +671,8 @@ async function handleMessage(msg: { type: string; payload?: any }, post: (type: 
         const result = await optimize(payload.input, config);
         const historyItem = appendHistory(payload.input, result, config);
         post("optimizeResult", { requestId: payload.requestId, optimized: result, item: historyItem });
+        // 写入 MCP 消息队列，供 IDE 的 AI 助手通过 MCP 获取
+        pushToMcpQueue(payload.input, result, config.engine);
       } catch (e: any) {
         post("optimizeError", { requestId: payload.requestId, error: e?.message ?? String(e) });
       }
@@ -706,6 +778,39 @@ async function handleMessage(msg: { type: string; payload?: any }, post: (type: 
       mkdirSync(CONFIG_DIR, { recursive: true });
       writeFileSync(join(CONFIG_DIR, ".setup-done"), "1", "utf-8");
       post("setupMarked", null);
+      break;
+    }
+    case "sendToChat": {
+      // 将优化后的提示词发送到 IDE 的 AI 聊天窗口
+      const text = payload.text as string;
+      let sent = false;
+
+      // 方式1: Kiro 内置聊天 - 使用 workbench.action.chat.open 带 query 参数
+      if (!sent) {
+        try {
+          await vscode.commands.executeCommand("workbench.action.chat.open", {
+            query: text,
+            isPartialQuery: false,
+          });
+          sent = true;
+        } catch {}
+      }
+
+      // 方式2: 如果上面没成功，尝试 kiro 专属命令
+      if (!sent) {
+        try {
+          await vscode.commands.executeCommand("kiro.chat.send", text);
+          sent = true;
+        } catch {}
+      }
+
+      // 方式3: 兜底 - 复制到剪贴板并通知
+      if (!sent) {
+        await vscode.env.clipboard.writeText(text);
+        vscode.window.showInformationMessage("已复制优化后的提示词，请粘贴到聊天窗口");
+      }
+
+      post("sentToChat", { success: sent });
       break;
     }
   }
