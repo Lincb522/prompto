@@ -5,10 +5,21 @@ const vscode = acquireVsCodeApi();
 
 type MessageHandler = (payload: unknown) => void;
 const listeners = new Map<string, Set<MessageHandler>>();
+const pendingCallbacks = new Map<string, (payload: unknown) => void>();
 
 // 监听来自 Extension Host 的消息
 window.addEventListener("message", (event) => {
   const { type, payload } = event.data;
+
+  // 优先检查 pending callbacks（带 requestId 的一次性回调）
+  if (pendingCallbacks.has(type)) {
+    const cb = pendingCallbacks.get(type)!;
+    pendingCallbacks.delete(type);
+    cb(payload);
+    return;
+  }
+
+  // 持久监听器
   const handlers = listeners.get(type);
   if (handlers) {
     handlers.forEach((h) => h(payload));
@@ -29,104 +40,72 @@ export function onMessage(type: string, handler: MessageHandler): () => void {
   };
 }
 
-// 一次性监听（Promise 化）
-export function waitForMessage<T = unknown>(type: string, timeout = 30000): Promise<T> {
-  return new Promise((resolve, reject) => {
+// 发送请求并等待响应（先注册回调再发消息）
+function request<T = unknown>(sendType: string, sendPayload: unknown, responseType: string, timeout = 30000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(`等待消息 ${type} 超时`));
+      pendingCallbacks.delete(responseType);
+      reject(new Error(`请求 ${sendType} 超时`));
     }, timeout);
 
-    const cleanup = onMessage(type, (payload) => {
+    pendingCallbacks.set(responseType, (payload) => {
       clearTimeout(timer);
-      cleanup();
       resolve(payload as T);
     });
+
+    postMessage(sendType, sendPayload);
   });
+}
+
+// 带唯一 ID 的请求（避免多次调用冲突）
+function requestWithId<T = unknown>(sendType: string, payload: Record<string, unknown>, responsePrefix: string, timeout = 30000): Promise<T> {
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const fullPayload = { ...payload, requestId };
+  const responseType = `${responsePrefix}:${requestId}`;
+  return request<T>(sendType, fullPayload, responseType, timeout);
 }
 
 // 便捷 API
 export const api = {
-  getConfig: () => {
-    postMessage("getConfig");
-    return waitForMessage("configLoaded");
-  },
-  updateConfig: (config: unknown) => {
-    postMessage("updateConfig", config);
-    return waitForMessage("configLoaded");
-  },
-  getHistory: () => {
-    postMessage("getHistory");
-    return waitForMessage("historyLoaded");
-  },
-  deleteHistoryItem: (id: string) => {
-    postMessage("deleteHistoryItem", { id });
-    return waitForMessage("historyLoaded");
-  },
-  togglePin: (id: string) => {
-    postMessage("togglePin", { id });
-    return waitForMessage("historyLoaded");
-  },
-  clearAllHistory: () => {
-    postMessage("clearAllHistory");
-    return waitForMessage("historyLoaded");
-  },
-  detectClis: () => {
-    postMessage("detectClis");
-    return waitForMessage("clisDetected");
-  },
-  listModels: (cli: string) => {
-    const requestId = `models-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    postMessage("listModels", { cli, requestId });
-    return waitForMessage<unknown>(`modelsLoaded:${requestId}`);
-  },
+  getConfig: () => request("getConfig", undefined, "configLoaded"),
+  updateConfig: (config: unknown) => request("updateConfig", config, "configLoaded"),
+  getHistory: () => request("getHistory", undefined, "historyLoaded"),
+  deleteHistoryItem: (id: string) => request("deleteHistoryItem", { id }, "historyLoaded"),
+  togglePin: (id: string) => request("togglePin", { id }, "historyLoaded"),
+  clearAllHistory: () => request("clearAllHistory", undefined, "historyLoaded"),
+  detectClis: () => request("detectClis", undefined, "clisDetected"),
+  listModels: (cli: string) => requestWithId<unknown>("listModels", { cli }, "modelsLoaded"),
   optimize: (input: string, requestId: string) => {
-    postMessage("optimize", { input, requestId });
-    // 返回结果或错误
-    return Promise.race([
-      waitForMessage("optimizeResult"),
-      waitForMessage("optimizeError").then((err: any) => { throw new Error(err.error); }),
-    ]);
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingCallbacks.delete("optimizeResult");
+        pendingCallbacks.delete("optimizeError");
+        reject(new Error("改写超时"));
+      }, 180000);
+
+      pendingCallbacks.set("optimizeResult", (payload) => {
+        clearTimeout(timer);
+        pendingCallbacks.delete("optimizeError");
+        resolve(payload);
+      });
+      pendingCallbacks.set("optimizeError", (payload: any) => {
+        clearTimeout(timer);
+        pendingCallbacks.delete("optimizeResult");
+        reject(new Error(payload?.error || "改写失败"));
+      });
+
+      postMessage("optimize", { input, requestId });
+    });
   },
-  checkMcpStatus: () => {
-    postMessage("checkMcpStatus");
-    return waitForMessage("mcpStatusLoaded");
-  },
-  getDefaultSystemPrompt: () => {
-    postMessage("getDefaultSystemPrompt");
-    return waitForMessage<string>("defaultSystemPrompt");
-  },
+  checkMcpStatus: () => request("checkMcpStatus", undefined, "mcpStatusLoaded"),
+  getDefaultSystemPrompt: () => request<string>("getDefaultSystemPrompt", undefined, "defaultSystemPrompt"),
   openConfigDir: () => postMessage("openConfigDir"),
-  copyToClipboard: (text: string) => {
-    postMessage("copyToClipboard", { text });
-    return waitForMessage("clipboardCopied");
-  },
-  readClipboard: () => {
-    postMessage("readClipboard");
-    return waitForMessage<string>("clipboardContent");
-  },
-  installCli: (cli: string) => {
-    postMessage("installCli", { cli });
-    return waitForMessage<{ cli: string; success: boolean; error?: string }>("cliInstallResult");
-  },
-  installMcp: (ide: string) => {
-    postMessage("installMcp", { ide });
-    return waitForMessage<{ ide: string; success: boolean; error?: string }>("mcpInstallResult");
-  },
-  getSetupStatus: () => {
-    postMessage("getSetupStatus");
-    return waitForMessage("setupStatus");
-  },
-  markSetupDone: () => {
-    postMessage("markSetupDone");
-    return waitForMessage("setupMarked");
-  },
-  sendToChat: (text: string) => {
-    postMessage("sendToChat", { text });
-    return waitForMessage("sentToChat");
-  },
-  getWorkspaceFolders: () => {
-    postMessage("getWorkspaceFolders");
-    return waitForMessage<{ name: string; path: string }[]>("workspaceFolders");
-  },
+  copyToClipboard: (text: string) => request("copyToClipboard", { text }, "clipboardCopied"),
+  readClipboard: () => request<string>("readClipboard", undefined, "clipboardContent"),
+  installCli: (cli: string) => request<{ cli: string; success: boolean; error?: string }>("installCli", { cli }, "cliInstallResult", 120000),
+  installMcp: (ide: string) => request<{ ide: string; success: boolean; error?: string }>("installMcp", { ide }, "mcpInstallResult"),
+  getSetupStatus: () => request("getSetupStatus", undefined, "setupStatus"),
+  markSetupDone: () => request("markSetupDone", undefined, "setupMarked"),
+  sendToChat: (text: string) => request("sendToChat", { text }, "sentToChat"),
+  getWorkspaceFolders: () => requestWithId<{ name: string; path: string }[]>("getWorkspaceFolders", {}, "workspaceFolders", 5000),
 };

@@ -81,14 +81,14 @@ function StatusView() {
   return (
     <div className="p-3 space-y-3">
       {/* 统计 */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white/40 dark:bg-white/10">
-          <BarChart3 className="w-3 h-3 text-fg-muted dark:text-fg-dark-muted" />
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/50 dark:bg-white/10 shadow-sm">
+          <BarChart3 className="w-3.5 h-3.5 text-fg-muted dark:text-fg-dark-muted" />
           <span className="text-[10px] text-fg-muted dark:text-fg-dark-muted">总计</span>
           <span className="text-xs font-bold text-fg dark:text-fg-dark">{totalCount}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white/40 dark:bg-white/10">
-          <Sparkles className="w-3 h-3 text-primary" />
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-primary/5 dark:bg-primary/10 shadow-sm">
+          <Sparkles className="w-3.5 h-3.5 text-primary" />
           <span className="text-[10px] text-fg-muted dark:text-fg-dark-muted">今日</span>
           <span className="text-xs font-bold text-primary">{todayCount}</span>
         </div>
@@ -135,9 +135,15 @@ function StatusView() {
       </div>
 
       {/* 快捷键提示 */}
-      <div className="text-[10px] text-fg-muted/60 dark:text-fg-dark-muted/60 space-y-1 px-1">
-        <div>⌘+Shift+R — 改写选中</div>
-        <div>⌘+Shift+L — 聚焦聊天</div>
+      <div className="text-[10px] text-fg-muted/50 dark:text-fg-dark-muted/50 space-y-1.5 px-1 pt-1">
+        <div className="flex items-center gap-2">
+          <kbd className="px-1 py-0.5 rounded bg-white/50 dark:bg-white/10 text-[9px] font-mono">⌘⇧R</kbd>
+          <span>改写选中</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <kbd className="px-1 py-0.5 rounded bg-white/50 dark:bg-white/10 text-[9px] font-mono">⌘⇧L</kbd>
+          <span>聚焦聊天</span>
+        </div>
       </div>
     </div>
   );
@@ -316,6 +322,7 @@ function SettingsView() {
 
 function ChannelsTab({ draft, setDraft }: { draft: AppConfig; setDraft: (d: AppConfig) => void }) {
   const channels = draft.mcp_channels || [];
+  const [detecting, setDetecting] = useState(false);
 
   const addChannel = () => {
     const id = `ch-${Date.now().toString(36)}`;
@@ -325,22 +332,43 @@ function ChannelsTab({ draft, setDraft }: { draft: AppConfig; setDraft: (d: AppC
     });
   };
 
-  const autoDetect = async () => {
-    const folders = await api.getWorkspaceFolders();
-    if (!folders || folders.length === 0) return;
-    const existing = new Set(channels.map(c => c.project_dir));
-    const newChannels = [...channels];
-    for (const f of folders) {
-      if (!existing.has(f.path)) {
-        newChannels.push({
-          id: `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 4)}`,
-          name: f.name,
-          project_dir: f.path,
-          enabled: true,
+  const autoDetect = () => {
+    setDetecting(true);
+    api.getWorkspaceFolders()
+      .then((folders) => {
+        const newChannels = [...channels];
+        if (folders && folders.length > 0) {
+          const existing = new Set(channels.map(c => c.project_dir));
+          for (const f of folders) {
+            if (f.path && !existing.has(f.path)) {
+              newChannels.push({
+                id: `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 4)}`,
+                name: f.name || f.path.split("/").pop() || "项目",
+                project_dir: f.path,
+                enabled: true,
+              });
+            }
+          }
+        }
+        if (newChannels.length === channels.length) {
+          // 没有新增，添加一个空通道让用户手动填
+          newChannels.push({
+            id: `ch-${Date.now().toString(36)}`,
+            name: "新通道",
+            project_dir: "",
+            enabled: true,
+          });
+        }
+        setDraft({ ...draft, mcp_channels: newChannels });
+      })
+      .catch(() => {
+        // 出错也添加空通道
+        setDraft({
+          ...draft,
+          mcp_channels: [...channels, { id: `ch-${Date.now().toString(36)}`, name: "新通道", project_dir: "", enabled: true }],
         });
-      }
-    }
-    setDraft({ ...draft, mcp_channels: newChannels });
+      })
+      .finally(() => setDetecting(false));
   };
 
   const updateChannel = (index: number, patch: Partial<import("@/store/app-store").McpChannel>) => {
@@ -360,10 +388,11 @@ function ChannelsTab({ draft, setDraft }: { draft: AppConfig; setDraft: (d: AppC
           改写结果按通道推送到对应项目的 IDE。
         </p>
         <button
-          onClick={() => void autoDetect()}
-          className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 cursor-pointer transition-colors"
+          onClick={autoDetect}
+          disabled={detecting}
+          className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 cursor-pointer transition-colors disabled:opacity-50"
         >
-          自动检测
+          {detecting ? "检测中..." : "自动检测"}
         </button>
       </div>
 

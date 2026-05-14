@@ -684,11 +684,48 @@ async function handleMessage(msg: { type: string; payload?: any }, post: (type: 
     case "copyToClipboard": { await vscode.env.clipboard.writeText(payload.text); post("clipboardCopied", null); break; }
     case "readClipboard": { post("clipboardContent", await vscode.env.clipboard.readText()); break; }
     case "getWorkspaceFolders": {
-      const folders = vscode.workspace.workspaceFolders?.map(f => ({
-        name: f.name,
-        path: f.uri.fsPath,
-      })) || [];
-      post("workspaceFolders", folders);
+      try {
+        // 获取工作区目录
+        let folders = vscode.workspace.workspaceFolders?.map(f => ({
+          name: f.name,
+          path: f.uri.fsPath,
+        })) || [];
+
+        // 如果 workspaceFolders 为空，尝试从打开的文件推断项目目录
+        if (folders.length === 0) {
+          const activeEditor = vscode.window.activeTextEditor;
+          if (activeEditor) {
+            const filePath = activeEditor.document.uri.fsPath;
+            const dir = join(filePath, "..");
+            let current = dir;
+            for (let i = 0; i < 10; i++) {
+              if (existsSync(join(current, "package.json")) || existsSync(join(current, "Cargo.toml")) || existsSync(join(current, ".git"))) {
+                const name = current.split("/").pop() || current;
+                folders = [{ name, path: current }];
+                break;
+              }
+              const parent = join(current, "..");
+              if (parent === current) break;
+              current = parent;
+            }
+          }
+        }
+
+        // 还是空的话，用 cwd
+        if (folders.length === 0) {
+          const cwd = process.cwd();
+          if (cwd && cwd !== "/") {
+            const name = cwd.split("/").pop() || cwd;
+            folders = [{ name, path: cwd }];
+          }
+        }
+
+        const responseType = payload?.requestId ? `workspaceFolders:${payload.requestId}` : "workspaceFolders";
+        post(responseType, folders);
+      } catch {
+        const responseType = payload?.requestId ? `workspaceFolders:${payload.requestId}` : "workspaceFolders";
+        post(responseType, []);
+      }
       break;
     }
     case "installCli": {
@@ -789,33 +826,34 @@ async function handleMessage(msg: { type: string; payload?: any }, post: (type: 
       break;
     }
     case "sendToChat": {
-      // 将优化后的提示词发送到 IDE 的 AI 聊天窗口
+      // 将优化后的提示词发送到 Kiro/IDE 的 AI 聊天窗口
       const text = payload.text as string;
       let sent = false;
 
-      // 方式1: Kiro 内置聊天 - 使用 workbench.action.chat.open 带 query 参数
-      if (!sent) {
+      // 尝试各种可能的聊天命令
+      const chatCommands = [
+        // Kiro 内置聊天
+        { cmd: "kiro.sendPrompt", args: [text] },
+        { cmd: "kiro.chat.sendMessage", args: [text] },
+        { cmd: "kiro.sendMessage", args: [{ message: text }] },
+        // VS Code Chat API (1.93+)
+        { cmd: "workbench.action.chat.open", args: [{ query: text, isPartialQuery: false }] },
+        // GitHub Copilot Chat
+        { cmd: "github.copilot.chat.sendMessage", args: [{ message: text }] },
+      ];
+
+      for (const { cmd, args } of chatCommands) {
+        if (sent) break;
         try {
-          await vscode.commands.executeCommand("workbench.action.chat.open", {
-            query: text,
-            isPartialQuery: false,
-          });
+          await vscode.commands.executeCommand(cmd, ...args);
           sent = true;
         } catch {}
       }
 
-      // 方式2: 如果上面没成功，尝试 kiro 专属命令
       if (!sent) {
-        try {
-          await vscode.commands.executeCommand("kiro.chat.send", text);
-          sent = true;
-        } catch {}
-      }
-
-      // 方式3: 兜底 - 复制到剪贴板并通知
-      if (!sent) {
+        // 兜底：复制到剪贴板 + 通知
         await vscode.env.clipboard.writeText(text);
-        vscode.window.showInformationMessage("已复制优化后的提示词，请粘贴到聊天窗口");
+        vscode.window.showInformationMessage("已复制到剪贴板，请粘贴到 AI 聊天窗口（⌘+V）");
       }
 
       post("sentToChat", { success: sent });
@@ -915,10 +953,87 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
 }
 
 // ============================================================
+// 自动检测工作区并建立 MCP 通道
+// ============================================================
+
+function autoSetupChannels() {
+  let projectPaths: { name: string; path: string }[] = [];
+
+  // 方式1: workspaceFolders
+  const folders = vscode.workspace.workspaceFolders;
+  if (folders && folders.length > 0) {
+    projectPaths = folders.map(f => ({ name: f.name, path: f.uri.fsPath }));
+  }
+
+  // 方式2: 从打开的文件推断
+  if (projectPaths.length === 0) {
+    const editors = vscode.window.visibleTextEditors;
+    const seen = new Set<string>();
+    for (const editor of editors) {
+      const filePath = editor.document.uri.fsPath;
+      if (!filePath || filePath.startsWith("untitled")) continue;
+      let current = join(filePath, "..");
+      for (let i = 0; i < 10; i++) {
+        if (existsSync(join(current, ".git")) || existsSync(join(current, "package.json")) || existsSync(join(current, "Cargo.toml"))) {
+          if (!seen.has(current)) {
+            seen.add(current);
+            const name = current.split("/").pop() || current;
+            projectPaths.push({ name, path: current });
+          }
+          break;
+        }
+        const parent = join(current, "..");
+        if (parent === current) break;
+        current = parent;
+      }
+    }
+  }
+
+  // 方式3: workspaceFile 所在目录
+  if (projectPaths.length === 0 && vscode.workspace.workspaceFile) {
+    const wsDir = join(vscode.workspace.workspaceFile.fsPath, "..");
+    const name = wsDir.split("/").pop() || wsDir;
+    projectPaths = [{ name, path: wsDir }];
+  }
+
+  if (projectPaths.length === 0) return;
+
+  const config = loadConfig();
+  const channels: McpChannel[] = config.mcp_channels || [];
+  const existingPaths = new Set(channels.map(c => c.project_dir));
+  let changed = false;
+
+  for (const { name, path } of projectPaths) {
+    if (!existingPaths.has(path)) {
+      channels.push({
+        id: `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 4)}`,
+        name,
+        project_dir: path,
+        enabled: true,
+      });
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    config.mcp_channels = channels;
+    saveConfig(config);
+  }
+}
+
+// ============================================================
 // 扩展入口
 // ============================================================
 
 export function activate(context: vscode.ExtensionContext) {
+  // 自动检测工作区并建立 MCP 通道
+  autoSetupChannels();
+
+  // 工作区变化时自动更新通道
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => autoSetupChannels())
+  );
+
   // 注册侧边栏配置面板
   const configProvider = new ConfigViewProvider(context.extensionUri, context);
   context.subscriptions.push(
