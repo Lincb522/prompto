@@ -630,6 +630,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: "watch_optimizations",
+      description: "等待并获取下一条优化结果。此工具会阻塞等待直到有新的改写结果到达（最长等待 30 秒）。用于实现常驻监听模式：在对话中反复调用此工具即可持续接收插件的改写结果。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          channel: {
+            type: "string",
+            description: "通道 ID 或项目目录路径（可选，不传则监听所有通道）",
+          },
+          timeout: {
+            type: "number",
+            description: "等待超时秒数（默认 30，最大 60）",
+          },
+        },
+      },
+    },
   ],
 }));
 
@@ -743,6 +760,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     await markConsumed([latest.id]);
     return {
       content: [{ type: "text" as const, text: latest.optimized }],
+    };
+  }
+
+  if (name === "watch_optimizations") {
+    const { channel, timeout: timeoutSec = 30 } = (args || {}) as { channel?: string; timeout?: number };
+    const maxWait = Math.min(Math.max(timeoutSec, 1), 60) * 1000;
+    const pollInterval = 1000;
+    const startTime = Date.now();
+
+    // 先检查是否已有未消费的消息
+    const existing = await getPendingMessages(channel);
+    if (existing.length > 0) {
+      const latest = existing.sort((a, b) => b.timestamp - a.timestamp)[0];
+      await markConsumed([latest.id]);
+      return {
+        content: [{ type: "text" as const, text: `[收到优化结果]\n\n${latest.optimized}` }],
+      };
+    }
+
+    // 轮询等待新消息
+    while (Date.now() - startTime < maxWait) {
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      const pending = await getPendingMessages(channel);
+      if (pending.length > 0) {
+        const latest = pending.sort((a, b) => b.timestamp - a.timestamp)[0];
+        await markConsumed([latest.id]);
+        return {
+          content: [{ type: "text" as const, text: `[收到优化结果]\n\n${latest.optimized}` }],
+        };
+      }
+    }
+
+    return {
+      content: [{ type: "text" as const, text: `等待 ${timeoutSec} 秒未收到新的优化结果。可再次调用 watch_optimizations 继续等待。` }],
     };
   }
 

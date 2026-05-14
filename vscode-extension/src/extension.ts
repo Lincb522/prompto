@@ -683,6 +683,14 @@ async function handleMessage(msg: { type: string; payload?: any }, post: (type: 
     case "openConfigDir": vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(CONFIG_DIR)); break;
     case "copyToClipboard": { await vscode.env.clipboard.writeText(payload.text); post("clipboardCopied", null); break; }
     case "readClipboard": { post("clipboardContent", await vscode.env.clipboard.readText()); break; }
+    case "getWorkspaceFolders": {
+      const folders = vscode.workspace.workspaceFolders?.map(f => ({
+        name: f.name,
+        path: f.uri.fsPath,
+      })) || [];
+      post("workspaceFolders", folders);
+      break;
+    }
     case "installCli": {
       // 安装 CLI 工具
       const cli = payload.cli as string;

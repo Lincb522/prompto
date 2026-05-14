@@ -125,4 +125,8 @@ export const api = {
     postMessage("sendToChat", { text });
     return waitForMessage("sentToChat");
   },
+  getWorkspaceFolders: () => {
+    postMessage("getWorkspaceFolders");
+    return waitForMessage<{ name: string; path: string }[]>("workspaceFolders");
+  },
 };

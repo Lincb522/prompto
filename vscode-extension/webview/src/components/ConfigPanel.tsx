@@ -325,6 +325,24 @@ function ChannelsTab({ draft, setDraft }: { draft: AppConfig; setDraft: (d: AppC
     });
   };
 
+  const autoDetect = async () => {
+    const folders = await api.getWorkspaceFolders();
+    if (!folders || folders.length === 0) return;
+    const existing = new Set(channels.map(c => c.project_dir));
+    const newChannels = [...channels];
+    for (const f of folders) {
+      if (!existing.has(f.path)) {
+        newChannels.push({
+          id: `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 4)}`,
+          name: f.name,
+          project_dir: f.path,
+          enabled: true,
+        });
+      }
+    }
+    setDraft({ ...draft, mcp_channels: newChannels });
+  };
+
   const updateChannel = (index: number, patch: Partial<import("@/store/app-store").McpChannel>) => {
     const updated = [...channels];
     updated[index] = { ...updated[index], ...patch };
@@ -337,13 +355,21 @@ function ChannelsTab({ draft, setDraft }: { draft: AppConfig; setDraft: (d: AppC
 
   return (
     <div className="space-y-2.5">
-      <p className="text-[10px] text-fg-muted dark:text-fg-dark-muted">
-        配置 MCP 通道，改写结果会按通道推送到对应项目的 IDE。
-      </p>
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] text-fg-muted dark:text-fg-dark-muted">
+          改写结果按通道推送到对应项目的 IDE。
+        </p>
+        <button
+          onClick={() => void autoDetect()}
+          className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 cursor-pointer transition-colors"
+        >
+          自动检测
+        </button>
+      </div>
 
       {channels.length === 0 && (
         <p className="text-[10px] text-fg-muted/60 dark:text-fg-dark-muted/60 py-2">
-          未配置通道，改写结果将推送到全局队列。
+          未配置通道。点击"自动检测"获取当前工作区，或手动添加。
         </p>
       )}
 
@@ -366,13 +392,13 @@ function ChannelsTab({ draft, setDraft }: { draft: AppConfig; setDraft: (d: AppC
             className="glass-input !text-[10px] !py-1"
             value={ch.name}
             onChange={(e) => updateChannel(i, { name: e.target.value })}
-            placeholder="通道名称（如：我的项目）"
+            placeholder="通道名称"
           />
           <input
             className="glass-input !text-[10px] !py-1 font-mono"
             value={ch.project_dir}
             onChange={(e) => updateChannel(i, { project_dir: e.target.value })}
-            placeholder="项目目录路径（如：/Users/xxx/my-project）"
+            placeholder="项目目录路径"
           />
         </div>
       ))}
@@ -381,7 +407,7 @@ function ChannelsTab({ draft, setDraft }: { draft: AppConfig; setDraft: (d: AppC
         onClick={addChannel}
         className="w-full py-1.5 text-[10px] text-primary hover:bg-primary/10 rounded cursor-pointer transition-colors border border-dashed border-primary/30"
       >
-        + 添加通道
+        + 手动添加
       </button>
     </div>
   );
